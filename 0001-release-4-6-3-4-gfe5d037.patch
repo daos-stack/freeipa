@@ -1,0 +1,298 @@
+From 028de27235f599acc563e26f68937cff5b918b74 Mon Sep 17 00:00:00 2001
+From: Rob Crittenden <rcritten@redhat.com>
+Date: Wed, 31 Jan 2018 10:16:54 -0500
+Subject: [PATCH 1/4] VERSION.m4: Set back to git snapshot
+
+---
+ VERSION.m4 |    2 +-
+ 1 files changed, 1 insertions(+), 1 deletions(-)
+
+diff --git a/VERSION.m4 b/VERSION.m4
+index f18eb31..c411bbf 100644
+--- a/VERSION.m4
++++ b/VERSION.m4
+@@ -46,7 +46,7 @@ define(IPA_VERSION_PRE_RELEASE, )
+ # This option works only with GNU m4:                  #
+ # it requires esyscmd m4 macro.                        #
+ ########################################################
+-define(IPA_VERSION_IS_GIT_SNAPSHOT, no)
++define(IPA_VERSION_IS_GIT_SNAPSHOT, yes)
+ 
+ ########################################################
+ # git development branch:                              #
+-- 
+1.7.1
+
+
+From 86c0c64d928c010c672c740c7b8dd9257ff76a35 Mon Sep 17 00:00:00 2001
+From: Alexander Koksharov <akokshar@redhat.com>
+Date: Tue, 30 Jan 2018 16:38:16 +0100
+Subject: [PATCH 2/4] preventing ldap principal to be deleted
+
+ipa-server-install --uninstall command is calling server-del to
+delete replica. This scenario does not work since server-del
+is also deleting all principals from and ldap breaking ldap
+replication. As a result, only part of deletions are propagated
+to the other replicals leaving a lot of orphaned data there.
+
+https://pagure.io/freeipa/issue/7371
+
+This patch won't fully fix the issue with left-over data
+but more data is cleaned up and only ldap principal is left
+thus ending in a better state.
+Issue will be fully fixed only when topology plugin is patched
+as well. The following pagure ticket is created to track
+topology plugin change:
+https://pagure.io/freeipa/issue/7359
+
+Reviewed-By: Alexander Bokovoy <abokovoy@redhat.com>
+---
+ ipaserver/plugins/server.py |   22 +++++++++++++++++++---
+ 1 files changed, 19 insertions(+), 3 deletions(-)
+
+diff --git a/ipaserver/plugins/server.py b/ipaserver/plugins/server.py
+index 94ada8b..cb200ba 100644
+--- a/ipaserver/plugins/server.py
++++ b/ipaserver/plugins/server.py
+@@ -659,10 +659,26 @@ class server_del(LDAPDelete):
+         delete server kerberos key and all its svc principals
+         """
+         try:
++            # do not delete ldap principal if server-del command
++            # has been called on a machine which is being deleted
++            # since this will break replication.
++            # ldap principal to be cleaned later by topology plugin
++            # necessary changes to a topology plugin are tracked
++            # under https://pagure.io/freeipa/issue/7359
++            if master == self.api.env.host:
++                filter = (
++                    '(&(krbprincipalname=*/{}@{})'
++                    '(!(krbprincipalname=ldap/*)))'
++                    .format(master, self.api.env.realm)
++                )
++            else:
++                filter = '(krbprincipalname=*/{}@{})'.format(
++                    master, self.api.env.realm
++                )
++
+             entries = ldap.get_entries(
+-                self.api.env.basedn, ldap.SCOPE_SUBTREE,
+-                filter='(krbprincipalname=*/{}@{})'.format(
+-                    master, self.api.env.realm))
++                self.api.env.basedn, ldap.SCOPE_SUBTREE, filter=filter
++            )
+ 
+             if entries:
+                 entries.sort(key=lambda x: len(x.dn), reverse=True)
+-- 
+1.7.1
+
+
+From 924e97c457bacc033f8cb517bb0b59e717947022 Mon Sep 17 00:00:00 2001
+From: Aleksei Slaikovskii <aslaikov@redhat.com>
+Date: Tue, 23 Jan 2018 14:41:25 +0100
+Subject: [PATCH 3/4] Fixing translation problems
+
+ipa rpc server did set the LANG environment variable on each
+request and it was not thread safe which led to unpredictable
+mixed languages output. Also, there were mistakes regarding
+setting the Accept-Language HTTP header.
+
+Now on each request we're setting the "languages" property
+in the context thread local variable and client is setting
+the Accept-Language HTTP header correctly.
+
+Also, as the server is caching the schema and the schema can
+be generated for several languages it's good to store different
+schema fingerprint for each language separately.
+
+pagure: https://pagure.io/freeipa/issue/7238
+Reviewed-By: Tibor Dudlak <tdudlak@redhat.com>
+Reviewed-By: Stanislav Laznicka <slaznick@redhat.com>
+---
+ ipaclient/remote_plugins/__init__.py |    6 +++---
+ ipalib/rpc.py                        |    4 +++-
+ ipaserver/plugins/schema.py          |   13 +++++++++----
+ ipaserver/rpcserver.py               |   14 ++++++--------
+ 4 files changed, 21 insertions(+), 16 deletions(-)
+
+diff --git a/ipaclient/remote_plugins/__init__.py b/ipaclient/remote_plugins/__init__.py
+index 0dff001..f1ff22e 100644
+--- a/ipaclient/remote_plugins/__init__.py
++++ b/ipaclient/remote_plugins/__init__.py
+@@ -30,9 +30,9 @@ class ServerInfo(collections.MutableMapping):
+ 
+         # copy-paste from ipalib/rpc.py
+         try:
+-            self._language = (
+-                 locale.setlocale(locale.LC_ALL, '').split('.')[0].lower()
+-            )
++            self._language = locale.setlocale(
++                locale.LC_MESSAGES, ''
++            ).split('.')[0].lower()
+         except locale.Error:
+             self._language = 'en_us'
+ 
+diff --git a/ipalib/rpc.py b/ipalib/rpc.py
+index 539d4cf..c6a8989 100644
+--- a/ipalib/rpc.py
++++ b/ipalib/rpc.py
+@@ -536,7 +536,9 @@ class LanguageAwareTransport(MultiProtocolTransport):
+             self, host)
+ 
+         try:
+-            lang = locale.setlocale(locale.LC_ALL, '').split('.')[0].lower()
++            lang = locale.setlocale(
++                locale.LC_MESSAGES, ''
++            ).split('.')[0].lower()
+         except locale.Error:
+             # fallback to default locale
+             lang = 'en_us'
+diff --git a/ipaserver/plugins/schema.py b/ipaserver/plugins/schema.py
+index cc1c2a5..e4744c9 100644
+--- a/ipaserver/plugins/schema.py
++++ b/ipaserver/plugins/schema.py
+@@ -16,6 +16,7 @@ from ipalib.frontend import Command, Local, Method, Object
+ from ipalib.output import Entry, ListOfEntries, ListOfPrimaryKeys, PrimaryKey
+ from ipalib.parameters import Bool, Dict, Flag, Str
+ from ipalib.plugable import Registry
++from ipalib.request import context
+ from ipalib.text import _
+ from ipapython.version import API_VERSION
+ 
+@@ -833,11 +834,15 @@ class schema(Command):
+         return schema
+ 
+     def execute(self, *args, **kwargs):
+-        try:
+-            schema = self.api._schema
+-        except AttributeError:
++        langs = "".join(getattr(context, "languages", []))
++
++        if getattr(self.api, "_schema", None) is None:
++            setattr(self.api, "_schema", {})
++
++        schema = self.api._schema.get(langs)
++        if schema is None:
+             schema = self._generate_schema(**kwargs)
+-            setattr(self.api, '_schema', schema)
++            self.api._schema[langs] = schema
+ 
+         schema['ttl'] = SCHEMA_TTL
+ 
+diff --git a/ipaserver/rpcserver.py b/ipaserver/rpcserver.py
+index 5cbacf4..f14e784 100644
+--- a/ipaserver/rpcserver.py
++++ b/ipaserver/rpcserver.py
+@@ -334,7 +334,6 @@ class WSGIExecutioner(Executioner):
+         result = None
+         error = None
+         _id = None
+-        lang = os.environ['LANG']
+         name = None
+         args = ()
+         options = {}
+@@ -349,12 +348,9 @@ class WSGIExecutioner(Executioner):
+             if ('HTTP_ACCEPT_LANGUAGE' in environ):
+                 lang_reg_w_q = environ['HTTP_ACCEPT_LANGUAGE'].split(',')[0]
+                 lang_reg = lang_reg_w_q.split(';')[0]
+-                lang_ = lang_reg.split('-')[0]
+-                if '-' in lang_reg:
+-                    reg = lang_reg.split('-')[1].upper()
+-                else:
+-                    reg = lang_.upper()
+-                os.environ['LANG'] = '%s_%s' % (lang_, reg)
++                lang = lang_reg.split('-')[0]
++                setattr(context, "languages", [lang])
++
+             if (
+                 environ.get('CONTENT_TYPE', '').startswith(self.content_type)
+                 and environ['REQUEST_METHOD'] == 'POST'
+@@ -363,6 +359,7 @@ class WSGIExecutioner(Executioner):
+                 (name, args, options, _id) = self.unmarshal(data)
+             else:
+                 (name, args, options, _id) = self.simple_unmarshal(environ)
++
+             if name in self._system_commands:
+                 result = self._system_commands[name](self, *args, **options)
+             else:
+@@ -379,7 +376,8 @@ class WSGIExecutioner(Executioner):
+             )
+             error = InternalError()
+         finally:
+-            os.environ['LANG'] = lang
++            if hasattr(context, "languages"):
++                delattr(context, "languages")
+ 
+         principal = getattr(context, 'principal', 'UNKNOWN')
+         if command is not None:
+-- 
+1.7.1
+
+
+From fe5d037c2221dd7224a8a3f2b47f78fdfbb92b48 Mon Sep 17 00:00:00 2001
+From: Mohammad Rizwan Yusuf <myusuf@redhat.com>
+Date: Thu, 25 Jan 2018 14:21:04 +0530
+Subject: [PATCH 4/4] IANA reserved IP address can not be used as a forwarder. This test checks if ipa server installation throws an error when 0.0.0.0 is specified as forwarder IP address.
+
+related ticket: https://pagure.io/freeipa/issue/6894
+
+Signed-off-by: Mohammad Rizwan Yusuf <myusuf@redhat.com>
+Reviewed-By: Tibor Dudlak <tdudlak@redhat.com>
+---
+ ipatests/test_integration/test_installation.py |   42 ++++++++++++++++++++++++
+ 1 files changed, 42 insertions(+), 0 deletions(-)
+
+diff --git a/ipatests/test_integration/test_installation.py b/ipatests/test_integration/test_installation.py
+index 2031ad5..0bca96f 100644
+--- a/ipatests/test_integration/test_installation.py
++++ b/ipatests/test_integration/test_installation.py
+@@ -316,3 +316,45 @@ class TestInstallMasterDNS(IntegrationTest):
+ 
+     def test_install_kra(self):
+         tasks.install_kra(self.master, first_instance=True)
++
++
++class TestInstallMasterReservedIPasForwarder(IntegrationTest):
++    """Test to check if IANA reserved IP doesn't accepted as DNS forwarder
++
++    IANA reserved IP address can not be used as a forwarder.
++    This test checks if ipa server installation throws an error when
++    0.0.0.0 is specified as forwarder IP address.
++
++    related ticket: https://pagure.io/freeipa/issue/6894
++    """
++
++    def test_reserved_ip_as_forwarder(self):
++        args = [
++            'ipa-server-install',
++            '-n', self.master.domain.name,
++            '-r', self.master.domain.realm,
++            '-p', self.master.config.dirman_password,
++            '-a', self.master.config.admin_password,
++            '--setup-dns',
++            '--forwarder', '0.0.0.0',
++            '--auto-reverse']
++        cmd = self.master.run_command(args, raiseonerr=False)
++        assert cmd.returncode == 2
++        exp_str = ("error: option --forwarder: invalid IP address 0.0.0.0: "
++                   "cannot use IANA reserved IP address 0.0.0.0")
++        assert exp_str in cmd.stderr_text
++
++        server_install_options = (
++                "yes\n\n\n\n"
++                "{dm_pass}\n{dm_pass}"
++                "\n{admin_pass}\n{admin_pass}\n"
++                "yes\nyes\n0.0.0.0\n".format(
++                    dm_pass=self.master.config.dirman_password,
++                    admin_pass=self.master.config.admin_password))
++
++        cmd = self.master.run_command(['ipa-server-install'],
++                                      stdin_text=server_install_options,
++                                      raiseonerr=False)
++        exp_str = ("Invalid IP Address 0.0.0.0: cannot use IANA reserved "
++                   "IP address 0.0.0.0")
++        assert exp_str in cmd.stdout_text
+-- 
+1.7.1
+
