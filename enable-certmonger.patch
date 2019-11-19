@@ -1,0 +1,781 @@
+diff -u --recursive a/ipaplatform/opensuse/paths.py b/ipaplatform/opensuse/paths.py
+--- a/ipaplatform/opensuse/paths.py	2019-07-24 15:33:24.260837408 -0400
++++ b/ipaplatform/opensuse/paths.py	2019-07-25 21:58:15.633509427 -0400
+@@ -59,6 +59,11 @@
+     SYSTEMWIDE_IPA_CA_CRT = "/etc/pki/trust/anchors/ipa-ca.crt"
+     CA_CRT = "/etc/apache2/ipa/ca.crt"
+     BIN_KVNO = "/usr/lib/mit/bin/kvno"
++    BIN_HOSTNAME = "/usr/bin/hostname"
++    PAM_AUTH = "common-auth"
++    PAM_ACCOUNT = "common-account"
++    PAM_PASSWORD = "common-password"
++    PAM_SESSION = "common-session"
+     # volatile files
+     VAR_RUN_DIRSRV_DIR = "/run/dirsrv"
+     IPA_RENEWAL_LOCK = "/run/ipa/renewal.lock"
+diff -u --recursive a/ipaplatform/opensuse/services.py b/ipaplatform/opensuse/services.py
+--- a/ipaplatform/opensuse/services.py	2019-07-24 15:33:24.260837408 -0400
++++ b/ipaplatform/opensuse/services.py	2019-07-25 19:40:52.518615066 -0400
+@@ -57,6 +57,12 @@
+                 systemd_name = "%s.service" % (service_name)
+         super().__init__(service_name, systemd_name, api)
+ 
++class SuseCertmongerService(SuseService):
++    # Credits to upstream developer
++    def enable(self, instance_name=""):
++        super().enable(instance_name)
++        super().restart(instance_name)
++
+ 
+ class SuseDirectoryService(SuseService):
+     def tune_nofile_platform(self, num=8192, fstore=None):
+@@ -175,18 +181,11 @@
+         return u"bind" # identical to the ordinary named
+ 
+ 
+-class SuseODSEnforcerdService(SuseService):
+-    def get_user_name(self):
+-        return u'ods'
+-
+-    def get_group_name(self):
+-        return u'ods'
+-
+-
+-# There is not a certmonger on SUSE, therefore everything is noop.
+-class SuseCertmongerService(base_services.PlatformService):
+-    def __init__(self, api=None):
+-        base_services.PlatformService.__init__(self, 'there-is-no-certmonger', api)
++# Not using NIS on SUSE, therefore everything is noop.
++class SuseNisDomainService(base_services.PlatformService):
++    def __init__(self, instance_name, api=None):
++         pass
++#        base_services.PlatformService.__init__(self, 'there-is-no-nis-domain', api)
+ 
+     def start(instance_name="", capture_output=True, wait=True, update_service_list=True):
+         pass
+@@ -194,10 +193,19 @@
+     def stop(self, instance_name="", capture_output=True, update_service_list=True):
+         pass
+ 
++class SuseODSEnforcerdService(SuseService):
++    def get_user_name(self):
++        return u'ods'
++
++    def get_group_name(self):
++        return u'ods'
++
+ 
+ def suse_service_class_factory(name, api):
+     if name == 'dirsrv':
+         return SuseDirectoryService(name, api)
++    if name == 'domainname':
++        return SuseNisDomainService(api)
+     if name == 'ipa':
+         return SuseIPAService(name, api)
+     if name == 'sshd':
+@@ -208,8 +216,6 @@
+         return SuseNamedService(name, api)
+     if name in ('ods-enforcerd', 'ods_enforcerd'):
+         return SuseODSEnforcerdService(name, api)
+-    if name == 'certmonger':
+-        return SuseCertmongerService(api)
+     return SuseService(name, api)
+ 
+ 
+@@ -226,6 +232,6 @@
+         super().__init__(services)
+ 
+ 
+-timedate_services = ['ntpd']
+ service = suse_service_class_factory
+ knownservices = SuseServices()
++timedate_services = ['ntpd', 'chronyd']
+diff -u --recursive a/ipaplatform/opensuse/tasks.py b/ipaplatform/opensuse/tasks.py
+--- a/ipaplatform/opensuse/tasks.py	2019-07-24 15:33:24.260837408 -0400
++++ b/ipaplatform/opensuse/tasks.py	2019-07-26 11:21:41.160552956 -0400
+@@ -19,6 +19,7 @@
+ import sys
+ import urllib
+ import base64
++import shutil
+ 
+ from subprocess import CalledProcessError
+ from nss.error import NSPRError
+@@ -43,21 +44,238 @@
+     def restore_pre_ipa_client_configuration(self, fstore, statestore,
+                                              was_sssd_installed,
+                                              was_sssd_configured):
+-        print('FIXME: restore_pre_ipa_client_configuration is called')
++        log.debug('restore_pre_ipa_client_configuration is not defined.')
++        log.warn('restore_pre_ipa_client_configuration is not defined. the pre-ipa configuration has not been restored.')
+         pass
+ 
+-    def set_nisdomain(self, nisdomain):
+-        print('FIXME: set_nisdomain is called')
++    def restore_hostname(self, fstore, storestate):
++        log.debug('restore_hostname is not defined.')
++        log.warn('restore_hostname is not defined. reset the hostname manually if needed.')
+         pass
+ 
+-    def modify_nsswitch_pam_stack(self, sssd, mkhomedir, statestore):
+-        print('FIXME: modify_nsswitch_pam_stack is called')
++    def set_nisdomain(self, nisdomain):
++        log.debug('set_nisdomain is not defined.')
++        log.warn('set_nisdomain is not defined.')
++        log.warn('Manual configuration of NISDOMAIN is required to use NIS related services.')
+         pass
+ 
+     def modify_pam_to_use_krb5(self, statestore):
+-        print('FIXME: modify_pam_to_use_krb5 is called')
++        log.debug('modify_pam_to_use_krb5 is not defined.')
++        log.warn('modify_pam_to_use_krb5 is not defined.')
++        log.warn('Manual configuration of PAM is required to use krb5 authentication.')
+         pass
+ 
++    def modify_nsswitch_pam_stack(self, sssd, mkhomedir, statestore):
++        def __backup_config(path, fstore = None):
++           log.debug('Backing up file "{}".'.format(path))
++           if fstore:
++              fstore.backup_file(path)
++           else:
++              shutil.copy(path, "%s.ipasave" % (path))
++
++        def __write_config(path, content):
++           log.debug('Writing file "{}".'.format(path))
++           log.debug(content)
++           fd = open(path, "w")
++           fd.write(content)
++           fd.close()
++
++        fstore = None
++        pam_dir = '/etc/pam.d/'
++        nsswitch_file = '/etc/nsswitch.conf'
++        nsswitch = """# This file was create using ipa-client-install
++#
++# /etc/nsswitch.conf
++#
++# An example Name Service Switch config file. This file should be
++# sorted with the most-used services at the beginning.
++#
++# The entry '[NOTFOUND=return]' means that the search for an
++# entry should stop if the search in the previous entry turned
++# up nothing. Note that if the search failed due to some other reason
++# (like no NIS server responding) then the search continues with the
++# next entry.
++#
++# Legal entries are:
++#
++#       compat                  Use compatibility setup
++#       nisplus                 Use NIS+ (NIS version 3)
++#       nis                     Use NIS (NIS version 2), also called YP
++#       dns                     Use DNS (Domain Name Service)
++#       files                   Use the local files
++#       [NOTFOUND=return]       Stop searching if not found so far
++#
++# For more information, please read the nsswitch.conf.5 manual page.
++#
++
++passwd:		compat sss
++group:		compat sss
++shadow:		compat sss
++
++hosts:		files dns
++networks:	files dns
++
++services:	files
++protocols:	files
++rpc:		files
++ethers:		files
++netmasks:	files
++netgroup:	files sss
++publickey:	files
++
++bootparams:	files
++automount:	files sss
++aliases:	files
++sudoers:	files sss
++"""
++        pam_auth="""#%PAM-1.0
++#
++# This file is created by ipa-client-install. DO NOT USE pam-config
++# or YaST2 to reconfigure PAM.  Neither tool supports all the options
++# required for configuring and ipa client correctly. Pam-config and
++# YaST2 will break IPA authentication.
++#
++# Authentication-related modules common to all services
++#
++# This file is included from other service-specific PAM config files,
++# and should contain a list of the authentication modules that define
++# the central authentication scheme for use on the system
++# (e.g., /etc/shadow, LDAP, Kerberos, etc.). The default is to use the
++# traditional Unix authentication mechanisms.
++#
++auth	required	pam_env.so
++auth	sufficient	pam_unix.so	try_first_pass
++auth	sufficient	pam_sss.so	forward_pass
++auth	required	pam_deny.so
++"""
++        pam_account="""#%PAM-1.0
++#
++# This file is created by ipa-client-install. DO NOT USE pam-config
++# or YaST2 to reconfigure PAM.  Neither tool supports all the options
++# required for configuring and ipa client correctly. Pam-config and
++# YaST2 will break IPA authentication.
++#
++# Account-related modules common to all services
++#
++# This file is included from other service-specific PAM config files,
++# and should contain a list of the account modules that define
++# the central access policy for use on the system.  The default is to
++# only deny service to users whose accounts are expired.
++#
++account	requisite				pam_unix.so    try_first_pass
++account	sufficient				pam_localuser.so
++account	[default=bad success=ok user_unknown=ignore]	pam_sss.so
++"""
++        pam_password="""#%PAM-1.0
++#
++# This file is created by ipa-client-install. DO NOT USE pam-config
++# or YaST2 to reconfigure PAM.  Neither tool supports all the options
++# required for configuring and ipa client correctly. Pam-config and
++# YaST2 will break IPA authentication.
++#
++# Password-related modules common to all services
++#
++# This file is included from other service-specific PAM config files,
++# and should contain a list of modules that define  the services to be
++# used to change user passwords.
++#
++password	requisite	pam_cracklib.so
++password	sufficient	pam_unix.so	use_authtok nullok shadow try_first_pass
++password	sufficient	pam_sss.so	use_authtok
++"""
++        pam_session="""
++#%PAM-1.0
++#
++# This file is created by ipa-client-install. DO NOT USE pam-config
++# or YaST2 to reconfigure PAM.  Neither tool supports all the options
++# required for configuring and ipa client correctly. Pam-config and
++# YaST2 will break IPA authentication.
++#
++# Session-related modules common to all services
++#
++# This file is included from other service-specific PAM config files,
++# and should contain a list of modules that define tasks to be performed
++# at the start and end of sessions of *any* kind (both interactive and
++# non-interactive
++#
++"""
++        if mkhomedir:
++           log.debug('Enabling mkhomedir')
++           pam_session += """
++session optional	pam_mkhomedir.so	umask=0077
++"""
++        pam_session += """session required	pam_limits.so
++session required	pam_unix.so		try_first_pass
++session optional	pam_sss.so
++session optional	pam_umask.so
++session optional	pam_env.so
++"""
++        log.debug("SUSE pam-config sucks so we have to generate the pam config manually.")
++        path_pam_auth = paths.PAM_AUTH
++        path_pam_account = paths.PAM_ACCOUNT
++        path_pam_password = paths.PAM_PASSWORD
++        path_pam_session = paths.PAM_SESSION
++      
++        if os.path.exists(''.join([pam_dir,path_pam_auth])):
++           if  os.path.islink(''.join([pam_dir,path_pam_auth])):
++               pam_auth_orig = os.readlink(''.join([pam_dir,path_pam_auth]))
++               os.unlink(''.join([pam_dir,path_pam_auth]))
++           else:
++               pam_auth_orig = ''.join([pam_dir,path_pam_auth])
++
++           __backup_config(''.join([pam_dir,pam_auth_orig]), fstore)
++
++        if os.path.exists(''.join([pam_dir,path_pam_account])):
++           if  os.path.islink(''.join([pam_dir,path_pam_account])):
++               pam_account_orig = os.readlink(''.join([pam_dir,path_pam_account]))
++               os.unlink(''.join([pam_dir,path_pam_account]))
++           else:
++               pam_account_orig = ''.join([pam_dir,path_pam_account])
++
++           __backup_config(''.join([pam_dir,pam_account_orig]), fstore)
++
++        if os.path.exists(''.join([pam_dir,path_pam_password])):
++           if  os.path.islink(''.join([pam_dir,path_pam_password])):
++               pam_password_orig = os.readlink(''.join([pam_dir,path_pam_password]))
++               os.unlink(''.join([pam_dir,path_pam_password]))
++           else:
++               pam_password_orig = ''.join([pam_dir,path_pam_password])
++
++           __backup_config(''.join([pam_dir,pam_password_orig]), fstore)
++
++        if os.path.exists(''.join([pam_dir,path_pam_session])):
++           if  os.path.islink(''.join([pam_dir,path_pam_session])):
++               pam_session_orig = os.readlink(''.join([pam_dir,path_pam_session]))
++               os.unlink(''.join([pam_dir,path_pam_session]))
++           else:
++               pam_session_orig = ''.join([pam_dir,path_pam_session])
++
++           __backup_config(''.join([pam_dir,pam_session_orig]), fstore)
++           __backup_config(nsswitch_file, fstore)
++
++        __write_config(''.join([pam_dir,path_pam_auth, '-ipa']), pam_auth)
++        os.symlink(''.join([path_pam_auth, '-ipa']), ''.join([pam_dir,path_pam_auth]))
++        __write_config(''.join([pam_dir,path_pam_account, '-ipa']), pam_account)
++        os.symlink(''.join([path_pam_account, '-ipa']), ''.join([pam_dir,path_pam_account]))
++        __write_config(''.join([pam_dir,path_pam_password, '-ipa']), pam_password)
++        os.symlink(''.join([path_pam_password, '-ipa']), ''.join([pam_dir,path_pam_password]))
++        __write_config(''.join([pam_dir,path_pam_session, '-ipa']), pam_session)
++        os.symlink(''.join([path_pam_session, '-ipa']), ''.join([pam_dir,path_pam_session]))
++
++        __write_config(nsswitch_file, nsswitch)
++
++        self.restore_context(''.join([pam_dir,path_pam_auth]))
++        self.restore_context(''.join([pam_dir,path_pam_auth, '-ipa']))
++        self.restore_context(''.join([pam_dir,path_pam_account]))
++        self.restore_context(''.join([pam_dir,path_pam_account, '-ipa']))
++        self.restore_context(''.join([pam_dir,path_pam_password]))
++        self.restore_context(''.join([pam_dir,path_pam_password, '-ipa']))
++        self.restore_context(''.join([pam_dir,path_pam_session]))
++        self.restore_context(''.join([pam_dir,path_pam_session, '-ipa']))
++        self.restore_context(nsswitch_file)
++
++        log.info('Configured PAM to use SSSD')
++        log.info('Configured {}'.format(nsswitch_file))
+     # Credits to upstream developer
+     def reload_systemwide_ca_store(self):
+         try:
+@@ -193,6 +411,39 @@
+ 
+         return result
+ 
++    def backup_hostname(self, fstore, statestore):
++        old_hostname = socket.gethostname()
++        filepath = paths.ETC_HOSTNAME
++        if os.path.exists(filepath):
++            # read old hostname
++            with open(filepath, 'r') as f:
++                for line in f.readlines():
++                    line = line.strip()
++                    if not line or line.startswith('#'):
++                        # skip comment or empty line
++                        continue
++                    old_hostname = line
++                    break
++            fstore.backup_file(filepath)
++
++        statestore.backup_state('network', 'hostname', old_hostname)
++        
++    def set_hostname(self, hostname):
++        filepath = paths.ETC_HOSTNAME
++        try:
++            ipautil.run([paths.BIN_HOSTNAME, hostname])
++        except ipautil.CalledProcessError as e:
++            print >>sys.stderr, ("Failed to set this machine hostname to "
++                                 "%s (%s)." % (hostname, str(e)))
++
++        with open(filepath, 'w') as f:
++            f.write("%s\n" % hostname)
++        os.chmod(filepath,
++                 stat.S_IRUSR | stat.S_IWUSR | stat.S_IRGRP | stat.S_IROTH)
++        os.chown(filepath, 0, 0)
++        self.restore_context(filepath)
++
++
+     # Credits to upstream developer
+     def backup_and_replace_hostname(self, fstore, statestore, hostname):
+         old_hostname = socket.gethostname()
+diff -u --recursive a/ipaplatform/suse/paths.py b/ipaplatform/suse/paths.py
+--- a/ipaplatform/suse/paths.py	2019-07-24 15:33:24.263837496 -0400
++++ b/ipaplatform/suse/paths.py	2019-07-26 11:22:37.488210624 -0400
+@@ -59,6 +59,11 @@
+     SYSTEMWIDE_IPA_CA_CRT = "/etc/pki/trust/anchors/ipa-ca.crt"
+     CA_CRT = "/etc/apache2/ipa/ca.crt"
+     BIN_KVNO = "/usr/lib/mit/bin/kvno"
++    BIN_HOSTNAME = "/usr/bin/hostname"
++    PAM_AUTH = "common-auth"
++    PAM_ACCOUNT = "common-account"
++    PAM_PASSWORD = "common-password"
++    PAM_SESSION = "common-session"
+     # volatile files
+     VAR_RUN_DIRSRV_DIR = "/run/dirsrv"
+     IPA_RENEWAL_LOCK = "/run/ipa/renewal.lock"
+diff -u --recursive a/ipaplatform/suse/services.py b/ipaplatform/suse/services.py
+--- a/ipaplatform/suse/services.py	2019-07-24 15:33:24.263837496 -0400
++++ b/ipaplatform/suse/services.py	2019-07-26 11:22:37.489210653 -0400
+@@ -57,6 +57,12 @@
+                 systemd_name = "%s.service" % (service_name)
+         super().__init__(service_name, systemd_name, api)
+ 
++class SuseCertmongerService(SuseService):
++    # Credits to upstream developer
++    def enable(self, instance_name=""):
++        super().enable(instance_name)
++        super().restart(instance_name)
++
+ 
+ class SuseDirectoryService(SuseService):
+     def tune_nofile_platform(self, num=8192, fstore=None):
+@@ -175,18 +181,11 @@
+         return u"bind" # identical to the ordinary named
+ 
+ 
+-class SuseODSEnforcerdService(SuseService):
+-    def get_user_name(self):
+-        return u'ods'
+-
+-    def get_group_name(self):
+-        return u'ods'
+-
+-
+-# There is not a certmonger on SUSE, therefore everything is noop.
+-class SuseCertmongerService(base_services.PlatformService):
+-    def __init__(self, api=None):
+-        base_services.PlatformService.__init__(self, 'there-is-no-certmonger', api)
++# Not using NIS on SUSE, therefore everything is noop.
++class SuseNisDomainService(base_services.PlatformService):
++    def __init__(self, instance_name, api=None):
++         pass
++#        base_services.PlatformService.__init__(self, 'there-is-no-nis-domain', api)
+ 
+     def start(instance_name="", capture_output=True, wait=True, update_service_list=True):
+         pass
+@@ -194,10 +193,19 @@
+     def stop(self, instance_name="", capture_output=True, update_service_list=True):
+         pass
+ 
++class SuseODSEnforcerdService(SuseService):
++    def get_user_name(self):
++        return u'ods'
++
++    def get_group_name(self):
++        return u'ods'
++
+ 
+-def suse_service_class_factory(name, api=None):
++def suse_service_class_factory(name, api):
+     if name == 'dirsrv':
+         return SuseDirectoryService(name, api)
++    if name == 'domainname':
++        return SuseNisDomainService(api)
+     if name == 'ipa':
+         return SuseIPAService(name, api)
+     if name == 'sshd':
+@@ -208,8 +216,6 @@
+         return SuseNamedService(name, api)
+     if name in ('ods-enforcerd', 'ods_enforcerd'):
+         return SuseODSEnforcerdService(name, api)
+-    if name == 'certmonger':
+-        return SuseCertmongerService(api)
+     return SuseService(name, api)
+ 
+ 
+@@ -223,9 +229,9 @@
+         services = dict()
+         for s in base_services.wellknownservices:
+             services[s] = self.service_class_factory(s, ipalib.api)
+-        super().__init__(services, api)
++        super().__init__(services)
+ 
+ 
+-timedate_services = ['ntpd']
+ service = suse_service_class_factory
+ knownservices = SuseServices()
++timedate_services = ['ntpd', 'chronyd']
+diff -u --recursive a/ipaplatform/suse/tasks.py b/ipaplatform/suse/tasks.py
+--- a/ipaplatform/suse/tasks.py	2019-07-24 15:33:24.263837496 -0400
++++ b/ipaplatform/suse/tasks.py	2019-07-26 11:22:37.489210653 -0400
+@@ -19,6 +19,7 @@
+ import sys
+ import urllib
+ import base64
++import shutil
+ 
+ from subprocess import CalledProcessError
+ from nss.error import NSPRError
+@@ -43,21 +44,238 @@
+     def restore_pre_ipa_client_configuration(self, fstore, statestore,
+                                              was_sssd_installed,
+                                              was_sssd_configured):
+-        print('FIXME: restore_pre_ipa_client_configuration is called')
++        log.debug('restore_pre_ipa_client_configuration is not defined.')
++        log.warn('restore_pre_ipa_client_configuration is not defined. the pre-ipa configuration has not been restored.')
+         pass
+ 
+-    def set_nisdomain(self, nisdomain):
+-        print('FIXME: set_nisdomain is called')
++    def restore_hostname(self, fstore, storestate):
++        log.debug('restore_hostname is not defined.')
++        log.warn('restore_hostname is not defined. reset the hostname manually if needed.')
+         pass
+ 
+-    def modify_nsswitch_pam_stack(self, sssd, mkhomedir, statestore):
+-        print('FIXME: modify_nsswitch_pam_stack is called')
++    def set_nisdomain(self, nisdomain):
++        log.debug('set_nisdomain is not defined.')
++        log.warn('set_nisdomain is not defined.')
++        log.warn('Manual configuration of NISDOMAIN is required to use NIS related services.')
+         pass
+ 
+     def modify_pam_to_use_krb5(self, statestore):
+-        print('FIXME: modify_pam_to_use_krb5 is called')
++        log.debug('modify_pam_to_use_krb5 is not defined.')
++        log.warn('modify_pam_to_use_krb5 is not defined.')
++        log.warn('Manual configuration of PAM is required to use krb5 authentication.')
+         pass
+ 
++    def modify_nsswitch_pam_stack(self, sssd, mkhomedir, statestore):
++        def __backup_config(path, fstore = None):
++           log.debug('Backing up file "{}".'.format(path))
++           if fstore:
++              fstore.backup_file(path)
++           else:
++              shutil.copy(path, "%s.ipasave" % (path))
++
++        def __write_config(path, content):
++           log.debug('Writing file "{}".'.format(path))
++           log.debug(content)
++           fd = open(path, "w")
++           fd.write(content)
++           fd.close()
++
++        fstore = None
++        pam_dir = '/etc/pam.d/'
++        nsswitch_file = '/etc/nsswitch.conf'
++        nsswitch = """# This file was create using ipa-client-install
++#
++# /etc/nsswitch.conf
++#
++# An example Name Service Switch config file. This file should be
++# sorted with the most-used services at the beginning.
++#
++# The entry '[NOTFOUND=return]' means that the search for an
++# entry should stop if the search in the previous entry turned
++# up nothing. Note that if the search failed due to some other reason
++# (like no NIS server responding) then the search continues with the
++# next entry.
++#
++# Legal entries are:
++#
++#       compat                  Use compatibility setup
++#       nisplus                 Use NIS+ (NIS version 3)
++#       nis                     Use NIS (NIS version 2), also called YP
++#       dns                     Use DNS (Domain Name Service)
++#       files                   Use the local files
++#       [NOTFOUND=return]       Stop searching if not found so far
++#
++# For more information, please read the nsswitch.conf.5 manual page.
++#
++
++passwd:		compat sss
++group:		compat sss
++shadow:		compat sss
++
++hosts:		files dns
++networks:	files dns
++
++services:	files
++protocols:	files
++rpc:		files
++ethers:		files
++netmasks:	files
++netgroup:	files sss
++publickey:	files
++
++bootparams:	files
++automount:	files sss
++aliases:	files
++sudoers:	files sss
++"""
++        pam_auth="""#%PAM-1.0
++#
++# This file is created by ipa-client-install. DO NOT USE pam-config
++# or YaST2 to reconfigure PAM.  Neither tool supports all the options
++# required for configuring and ipa client correctly. Pam-config and
++# YaST2 will break IPA authentication.
++#
++# Authentication-related modules common to all services
++#
++# This file is included from other service-specific PAM config files,
++# and should contain a list of the authentication modules that define
++# the central authentication scheme for use on the system
++# (e.g., /etc/shadow, LDAP, Kerberos, etc.). The default is to use the
++# traditional Unix authentication mechanisms.
++#
++auth	required	pam_env.so
++auth	sufficient	pam_unix.so	try_first_pass
++auth	sufficient	pam_sss.so	forward_pass
++auth	required	pam_deny.so
++"""
++        pam_account="""#%PAM-1.0
++#
++# This file is created by ipa-client-install. DO NOT USE pam-config
++# or YaST2 to reconfigure PAM.  Neither tool supports all the options
++# required for configuring and ipa client correctly. Pam-config and
++# YaST2 will break IPA authentication.
++#
++# Account-related modules common to all services
++#
++# This file is included from other service-specific PAM config files,
++# and should contain a list of the account modules that define
++# the central access policy for use on the system.  The default is to
++# only deny service to users whose accounts are expired.
++#
++account	requisite				pam_unix.so    try_first_pass
++account	sufficient				pam_localuser.so
++account	[default=bad success=ok user_unknown=ignore]	pam_sss.so
++"""
++        pam_password="""#%PAM-1.0
++#
++# This file is created by ipa-client-install. DO NOT USE pam-config
++# or YaST2 to reconfigure PAM.  Neither tool supports all the options
++# required for configuring and ipa client correctly. Pam-config and
++# YaST2 will break IPA authentication.
++#
++# Password-related modules common to all services
++#
++# This file is included from other service-specific PAM config files,
++# and should contain a list of modules that define  the services to be
++# used to change user passwords.
++#
++password	requisite	pam_cracklib.so
++password	sufficient	pam_unix.so	use_authtok nullok shadow try_first_pass
++password	sufficient	pam_sss.so	use_authtok
++"""
++        pam_session="""
++#%PAM-1.0
++#
++# This file is created by ipa-client-install. DO NOT USE pam-config
++# or YaST2 to reconfigure PAM.  Neither tool supports all the options
++# required for configuring and ipa client correctly. Pam-config and
++# YaST2 will break IPA authentication.
++#
++# Session-related modules common to all services
++#
++# This file is included from other service-specific PAM config files,
++# and should contain a list of modules that define tasks to be performed
++# at the start and end of sessions of *any* kind (both interactive and
++# non-interactive
++#
++"""
++        if mkhomedir:
++           log.debug('Enabling mkhomedir')
++           pam_session += """
++session optional	pam_mkhomedir.so	umask=0077
++"""
++        pam_session += """session required	pam_limits.so
++session required	pam_unix.so		try_first_pass
++session optional	pam_sss.so
++session optional	pam_umask.so
++session optional	pam_env.so
++"""
++        log.debug("SUSE pam-config sucks so we have to generate the pam config manually.")
++        path_pam_auth = paths.PAM_AUTH
++        path_pam_account = paths.PAM_ACCOUNT
++        path_pam_password = paths.PAM_PASSWORD
++        path_pam_session = paths.PAM_SESSION
++      
++        if os.path.exists(''.join([pam_dir,path_pam_auth])):
++           if  os.path.islink(''.join([pam_dir,path_pam_auth])):
++               pam_auth_orig = os.readlink(''.join([pam_dir,path_pam_auth]))
++               os.unlink(''.join([pam_dir,path_pam_auth]))
++           else:
++               pam_auth_orig = ''.join([pam_dir,path_pam_auth])
++
++           __backup_config(''.join([pam_dir,pam_auth_orig]), fstore)
++
++        if os.path.exists(''.join([pam_dir,path_pam_account])):
++           if  os.path.islink(''.join([pam_dir,path_pam_account])):
++               pam_account_orig = os.readlink(''.join([pam_dir,path_pam_account]))
++               os.unlink(''.join([pam_dir,path_pam_account]))
++           else:
++               pam_account_orig = ''.join([pam_dir,path_pam_account])
++
++           __backup_config(''.join([pam_dir,pam_account_orig]), fstore)
++
++        if os.path.exists(''.join([pam_dir,path_pam_password])):
++           if  os.path.islink(''.join([pam_dir,path_pam_password])):
++               pam_password_orig = os.readlink(''.join([pam_dir,path_pam_password]))
++               os.unlink(''.join([pam_dir,path_pam_password]))
++           else:
++               pam_password_orig = ''.join([pam_dir,path_pam_password])
++
++           __backup_config(''.join([pam_dir,pam_password_orig]), fstore)
++
++        if os.path.exists(''.join([pam_dir,path_pam_session])):
++           if  os.path.islink(''.join([pam_dir,path_pam_session])):
++               pam_session_orig = os.readlink(''.join([pam_dir,path_pam_session]))
++               os.unlink(''.join([pam_dir,path_pam_session]))
++           else:
++               pam_session_orig = ''.join([pam_dir,path_pam_session])
++
++           __backup_config(''.join([pam_dir,pam_session_orig]), fstore)
++           __backup_config(nsswitch_file, fstore)
++
++        __write_config(''.join([pam_dir,path_pam_auth, '-ipa']), pam_auth)
++        os.symlink(''.join([path_pam_auth, '-ipa']), ''.join([pam_dir,path_pam_auth]))
++        __write_config(''.join([pam_dir,path_pam_account, '-ipa']), pam_account)
++        os.symlink(''.join([path_pam_account, '-ipa']), ''.join([pam_dir,path_pam_account]))
++        __write_config(''.join([pam_dir,path_pam_password, '-ipa']), pam_password)
++        os.symlink(''.join([path_pam_password, '-ipa']), ''.join([pam_dir,path_pam_password]))
++        __write_config(''.join([pam_dir,path_pam_session, '-ipa']), pam_session)
++        os.symlink(''.join([path_pam_session, '-ipa']), ''.join([pam_dir,path_pam_session]))
++
++        __write_config(nsswitch_file, nsswitch)
++
++        self.restore_context(''.join([pam_dir,path_pam_auth]))
++        self.restore_context(''.join([pam_dir,path_pam_auth, '-ipa']))
++        self.restore_context(''.join([pam_dir,path_pam_account]))
++        self.restore_context(''.join([pam_dir,path_pam_account, '-ipa']))
++        self.restore_context(''.join([pam_dir,path_pam_password]))
++        self.restore_context(''.join([pam_dir,path_pam_password, '-ipa']))
++        self.restore_context(''.join([pam_dir,path_pam_session]))
++        self.restore_context(''.join([pam_dir,path_pam_session, '-ipa']))
++        self.restore_context(nsswitch_file)
++
++        log.info('Configured PAM to use SSSD')
++        log.info('Configured {}'.format(nsswitch_file))
+     # Credits to upstream developer
+     def reload_systemwide_ca_store(self):
+         try:
+@@ -193,6 +411,39 @@
+ 
+         return result
+ 
++    def backup_hostname(self, fstore, statestore):
++        old_hostname = socket.gethostname()
++        filepath = paths.ETC_HOSTNAME
++        if os.path.exists(filepath):
++            # read old hostname
++            with open(filepath, 'r') as f:
++                for line in f.readlines():
++                    line = line.strip()
++                    if not line or line.startswith('#'):
++                        # skip comment or empty line
++                        continue
++                    old_hostname = line
++                    break
++            fstore.backup_file(filepath)
++
++        statestore.backup_state('network', 'hostname', old_hostname)
++        
++    def set_hostname(self, hostname):
++        filepath = paths.ETC_HOSTNAME
++        try:
++            ipautil.run([paths.BIN_HOSTNAME, hostname])
++        except ipautil.CalledProcessError as e:
++            print >>sys.stderr, ("Failed to set this machine hostname to "
++                                 "%s (%s)." % (hostname, str(e)))
++
++        with open(filepath, 'w') as f:
++            f.write("%s\n" % hostname)
++        os.chmod(filepath,
++                 stat.S_IRUSR | stat.S_IWUSR | stat.S_IRGRP | stat.S_IROTH)
++        os.chown(filepath, 0, 0)
++        self.restore_context(filepath)
++
++
+     # Credits to upstream developer
+     def backup_and_replace_hostname(self, fstore, statestore, hostname):
+         old_hostname = socket.gethostname()
