@@ -64,7 +64,7 @@ Summary:        The Identity, Policy and Audit system
 Url:            https://www.freeipa.org/
 Group:          Productivity/Networking/LDAP/Servers
 Source:         https://releases.pagure.org/freeipa/freeipa-%{VERSION}.tar.gz
-Patch0001:      0001-release-4-6-3-4-gfe5d037.patch
+Patch0001:      0001-release-4-6-3.4-gfe5d037.patch
 Patch0002:      0002-backport-tumbleweed.patch
 Patch0003:      enable-certmonger.patch
 Patch0004:      suse_disable_ntp_keys_by_default.patch
