@@ -58,7 +58,7 @@
 
 Name:           freeipa
 Version:        %{MY_VERSION}+git10.87d5e59e6
-Release:        4.52%{?dist}
+Release:        4.53.1%{?dist}
 License:        GPL-3.0+
 Summary:        The Identity, Policy and Audit system
 Url:            https://www.freeipa.org/
@@ -139,7 +139,9 @@ Requires:       %{name}-common = %{version}
 Requires:       %{name}-client-common = %{version}
 # all
 Requires:       python3-six
+%if 0%{?rhel}
 Requires:       certmonger
+%endif
 Requires:       keyutils
 Requires:       mozilla-nss-tools
 Requires:       krb5-client
@@ -292,6 +294,8 @@ mkdir -p %{buildroot}%{_sysconfdir}/pki/ca-trust/source/
 %{_mandir}/man5/default.conf.5*
 
 %changelog
+* Mon Feb 24 2020 john.malmberg@intel.com
+- 4.6.3+git10.87d5e59e6-4.53.1, Only require certmonger for rhel.
 * Wed Nov 13 2019 john.malmberg@intel.com
 - Backport to OpenSUSE Leap 15.1
 * Wed Feb  7 2018 opensuse-packaging@opensuse.org
